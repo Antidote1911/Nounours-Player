@@ -18,7 +18,7 @@ JellyfinSearchDialog::JellyfinSearchDialog(NounoursEngine *nounours, QWidget *pa
 {
     setWindowTitle(tr("Jellyfin Search"));
     setWindowFlags(Qt::Dialog | Qt::WindowCloseButtonHint);
-    resize(700, 450);
+    resize(800, 550);
 
     // Search tab
     searchEdit = new QLineEdit(this);
@@ -51,9 +51,24 @@ JellyfinSearchDialog::JellyfinSearchDialog(NounoursEngine *nounours, QWidget *pa
     genresTabLayout->setContentsMargins(0, 0, 0, 0);
     genresTabLayout->addWidget(genresSplitter);
 
-    auto *tabWidget = new QTabWidget(this);
+    // Favorites tab
+    favoritesResults = new JellyfinResultsWidget(nounours, this);
+
+    auto *favRefreshButton = new QPushButton(tr("Refresh"), this);
+    auto *favButtonLayout = new QHBoxLayout;
+    favButtonLayout->addStretch();
+    favButtonLayout->addWidget(favRefreshButton);
+
+    auto *favoritesTab = new QWidget(this);
+    auto *favoritesTabLayout = new QVBoxLayout(favoritesTab);
+    favoritesTabLayout->setContentsMargins(0, 4, 0, 0);
+    favoritesTabLayout->addLayout(favButtonLayout);
+    favoritesTabLayout->addWidget(favoritesResults);
+
+    tabWidget = new QTabWidget(this);
     tabWidget->addTab(searchTab, tr("Search"));
     tabWidget->addTab(genresTab, tr("Genres"));
+    tabWidget->addTab(favoritesTab, tr("Favorites"));
 
     statusLabel = new QLabel(this);
     statusLabel->setWordWrap(true);
@@ -119,6 +134,37 @@ JellyfinSearchDialog::JellyfinSearchDialog(NounoursEngine *nounours, QWidget *pa
 
         genreResults->SetResults(items);
         statusLabel->setText(items.isEmpty() ? tr("No results found.") : tr("%0 result(s).").arg(items.size()));
+    });
+
+    connect(jellyfin, &JellyfinManager::favoritesResultsSignal, this, [=](QList<JellyfinItem> items)
+    {
+        favoritesResults->SetResults(items);
+        statusLabel->setText(items.isEmpty() ? tr("No favorites found.") : tr("%0 favorite(s).").arg(items.size()));
+    });
+
+    connect(favRefreshButton, &QPushButton::clicked, this, [=]
+    {
+        statusLabel->setText(tr("Loading..."));
+        jellyfin->GetFavorites();
+    });
+
+    connect(tabWidget, &QTabWidget::currentChanged, this, [=](int index)
+    {
+        if(index == 2 && jellyfin->isConnected())
+        {
+            statusLabel->setText(tr("Loading..."));
+            jellyfin->GetFavorites();
+        }
+    });
+
+    // When a favorite is toggled while the favorites tab is active, refresh the list
+    connect(jellyfin, &JellyfinManager::favoriteToggledSignal, this, [=](QString, bool)
+    {
+        if(tabWidget->currentIndex() == 2)
+        {
+            statusLabel->setText(tr("Loading..."));
+            jellyfin->GetFavorites();
+        }
     });
 
     connect(searchButton, &QPushButton::clicked, this, &JellyfinSearchDialog::DoSearch);

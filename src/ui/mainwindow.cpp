@@ -336,10 +336,13 @@ MainWindow::MainWindow(QWidget *parent):
                     // normal case: title already set with HDR info in trackListChanged
 
                     QString f = mpv->getFile(), file = mpv->getPath()+f;
+                    // Transcode URLs contain an expiring PlaySessionId and cannot be
+                    // replayed later; store the equivalent direct-stream URL instead.
+                    QString storeFile = nounours->jellyfin->DirectUrlForRecent(file);
                     if(f != QString() && maxRecent > 0)
                     {
                         auto it = std::find_if(recent.begin(), recent.end(),
-                            [&file](const Recent &r){ return r.path == file; });
+                            [&storeFile](const Recent &r){ return r.path == storeFile; });
                         if(it != recent.end())
                         {
                             int t = it->time;
@@ -347,16 +350,16 @@ MainWindow::MainWindow(QWidget *parent):
                                 mpv->Seek(t);
                             recent.erase(it);
                         }
-                        if(recent.isEmpty() || recent.front().path != file)
+                        if(recent.isEmpty() || recent.front().path != storeFile)
                         {
                             UpdateRecentFiles(); // update after initialization and only if the current file is different from the first recent
                             while(recent.length() > maxRecent-1)
                                 recent.removeLast();
                             QString jellyfinTitle = nounours->jellyfin->getNowPlayingTitle(file);
                             recent.push_front(
-                                Recent(file,
+                                Recent(storeFile,
                                        !jellyfinTitle.isEmpty() ? jellyfinTitle :
-                                       (mpv->getPath() == QString() || !Util::IsValidFile(file)) ?
+                                       (mpv->getPath() == QString() || !Util::IsValidFile(storeFile)) ?
                                            fileInfo.media_title : QString()));
                             current = &recent.front();
                         }

@@ -12,6 +12,7 @@ class QLineEdit;
 class QPushButton;
 class QListWidget;
 class QLabel;
+class QTabWidget;
 
 class JellyfinSearchDialog : public QDialog
 {
@@ -27,9 +28,11 @@ private:
     QPushButton *searchButton;
     QListWidget *genresList;
     QLabel      *statusLabel;
+    QTabWidget  *tabWidget;
 
     JellyfinResultsWidget *searchResults;
     JellyfinResultsWidget *genreResults;
+    JellyfinResultsWidget *favoritesResults;
 
     void DoSearch();
 };

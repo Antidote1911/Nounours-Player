@@ -66,8 +66,9 @@ protected:
 public slots:
     void LoadFile(QString);
     QString LoadPlaylist(QString);
-    bool PlayFile(QString);
-    void LoadUrlPlaylist(const QStringList &urls, const QStringList &labels, int startIndex);
+    bool PlayFile(QString, const QString &perFileOptions = {});
+    void LoadUrlPlaylist(const QStringList &urls, const QStringList &labels, int startIndex,
+                         const QString &perFileOptions = {});
 
     void AddOverlay(int id, int x, int y, QString file, int offset, int w, int h);
     void RemoveOverlay(int id);
@@ -112,6 +113,8 @@ public slots:
     void MsgLevel(QString level);
 
     void Hwdec(QString);
+    void SuppressHwdec();  // force hwdec=no without altering the user's stored setting
+    void ResumeHwdec();    // restore hwdec to the user's stored setting
     void Framedrop(QString);
     void SkipLoopFilter(QString);
     void VdLavcThreads(int);
@@ -129,7 +132,7 @@ public slots:
     void SetOption(QString key, QString val);
 
 protected slots:
-    void OpenFile(QString);
+    void OpenFile(QString, const QString &perFileOptions = {});
     QString PopulatePlaylist();
     void LoadFileInfo();
     void SetProperties();

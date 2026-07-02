@@ -16,6 +16,10 @@
 #include <QHostInfo>
 #include <QSysInfo>
 
+// Per-file options for mpv's loadfile command when playing Jellyfin transcode streams.
+// Forces OpenGL VO (no Vulkan DRI3) and software decode for this specific file.
+static const QString kTranscodeFileOpts = QStringLiteral("hwdec=no");
+
 JellyfinManager::JellyfinManager(QObject *parent):
     QObject(parent),
     nounours(static_cast<NounoursEngine*>(parent)),
@@ -46,19 +50,25 @@ JellyfinManager::JellyfinManager(QObject *parent):
         pendingNextSeasonIndex = -1;
         nowPlayingEpisodes = items;
 
+        if(transcodeMode)
+            nounours->mpv->SuppressHwdec();
+
         QStringList urls, labels;
         for(const auto &episode : items)
         {
-            urls << GetStreamUrl(episode.id);
+            urls << (transcodeMode ? GetTranscodeUrl(episode.id) : GetStreamUrl(episode.id));
             labels << QString("%0. %1").arg(episode.index).arg(episode.name);
         }
 
-        nounours->mpv->LoadUrlPlaylist(urls, labels, 0);
+        nounours->mpv->LoadUrlPlaylist(urls, labels, 0,
+                                        transcodeMode ? kTranscodeFileOpts : QString{});
     });
 }
 
 JellyfinManager::~JellyfinManager()
 {
+    accessToken.clear(); // prevent the disconnected signal from scheduling a reconnect
+    socket->abort();     // force-close the WebSocket without waiting for the closing handshake
 }
 
 QString JellyfinManager::AuthHeader() const
@@ -204,7 +214,7 @@ void JellyfinManager::SearchAllLibraries(const QString &term, const QHash<QStrin
         query.addQueryItem("Recursive", "true");
         query.addQueryItem("Limit", "50");
         if(withFields)
-            query.addQueryItem("Fields", "Overview,ProductionYear");
+            query.addQueryItem("Fields", "Overview,ProductionYear,UserData");
         if(!parentId.isEmpty())
             query.addQueryItem("ParentId", parentId);
 
@@ -249,6 +259,7 @@ void JellyfinManager::SearchAllLibraries(const QString &term, const QHash<QStrin
                 item.type = obj["Type"].toString();
                 item.overview = obj["Overview"].toString();
                 item.year = obj["ProductionYear"].toInt();
+                item.isFavorite = obj["UserData"].toObject()["IsFavorite"].toBool();
                 allItems->append(item);
             }
         }
@@ -509,9 +520,34 @@ QString JellyfinManager::getNowPlayingTitle(const QString &currentUrl) const
     return QString();
 }
 
-void JellyfinManager::PlayMovie(const JellyfinItem &item)
+void JellyfinManager::PlayMovie(const JellyfinItem &item, int transcodeHeight)
 {
-    QString url = GetStreamUrl(item.id);
+    transcodeMode        = transcodeHeight > 0;
+    this->transcodeHeight = transcodeHeight;
+    if(transcodeMode)
+    {
+        transcodeSessionId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        nounours->mpv->SuppressHwdec();
+
+        // Register keepalive session BEFORE loading the HLS URL.
+        // If we wait for UpdatePlaybackState (fired by mpv's file-loaded event),
+        // ReportPlaybackStart arrives while FFmpeg is already initialising and
+        // causes Jellyfin to reset the transcoding job, failing even segment 0.
+        if(!activePlaybackItemId.isEmpty())
+            ReportPlaybackStopped();
+        activePlaybackItemId = item.id;
+        playSessionId        = transcodeSessionId;
+        activePlaybackPaused = false;
+        playbackProgressTimer->stop();
+        ReportPlaybackStart(item.id);
+        playbackProgressTimer->start();
+    }
+    else
+    {
+        nounours->mpv->ResumeHwdec();
+    }
+
+    QString url = transcodeMode ? GetTranscodeUrl(item.id) : GetStreamUrl(item.id);
     QString label = item.name;
     if(item.year > 0)
         label += QString(" (%0)").arg(item.year);
@@ -519,12 +555,34 @@ void JellyfinManager::PlayMovie(const JellyfinItem &item)
     SetNowPlaying(url, QString("%0: %1").arg(getServerName(), label));
     nowPlayingEpisodes.clear();
 
-    nounours->mpv->LoadUrlPlaylist({url}, {label}, 0);
+    nounours->mpv->LoadUrlPlaylist({url}, {label}, 0, transcodeMode ? kTranscodeFileOpts : QString{});
 }
 
 void JellyfinManager::PlayEpisodes(const QString &seriesId, const QList<JellyfinItem> &seasons, int seasonIndex,
-                                    const QList<JellyfinItem> &episodes, int episodeIndex)
+                                    const QList<JellyfinItem> &episodes, int episodeIndex, int transcodeHeight)
 {
+    transcodeMode        = transcodeHeight > 0;
+    this->transcodeHeight = transcodeHeight;
+    if(transcodeMode)
+    {
+        transcodeSessionId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        nounours->mpv->SuppressHwdec();
+
+        if(!activePlaybackItemId.isEmpty())
+            ReportPlaybackStopped();
+        activePlaybackItemId = episodes.isEmpty() ? QString() : episodes.first().id;
+        playSessionId        = transcodeSessionId;
+        activePlaybackPaused = false;
+        playbackProgressTimer->stop();
+        if(!activePlaybackItemId.isEmpty())
+            ReportPlaybackStart(activePlaybackItemId);
+        playbackProgressTimer->start();
+    }
+    else
+    {
+        nounours->mpv->ResumeHwdec();
+    }
+
     nowPlayingSeriesId = seriesId;
     nowPlayingSeasons = seasons;
     nowPlayingSeasonIndex = seasonIndex;
@@ -534,11 +592,11 @@ void JellyfinManager::PlayEpisodes(const QString &seriesId, const QList<Jellyfin
     QStringList urls, labels;
     for(const auto &episode : episodes)
     {
-        urls << GetStreamUrl(episode.id);
+        urls << (transcodeMode ? GetTranscodeUrl(episode.id) : GetStreamUrl(episode.id));
         labels << QString("%0. %1").arg(episode.index).arg(episode.name);
     }
 
-    nounours->mpv->LoadUrlPlaylist(urls, labels, episodeIndex);
+    nounours->mpv->LoadUrlPlaylist(urls, labels, episodeIndex, transcodeMode ? kTranscodeFileOpts : QString{});
 }
 
 bool JellyfinManager::PlayNextSeason()
@@ -554,7 +612,7 @@ bool JellyfinManager::PlayNextSeason()
 QString JellyfinManager::ItemIdFromUrl(const QString &url)
 {
     static const QRegularExpression re("/Videos/([^/]+)/stream");
-    QRegularExpressionMatch match = re.match(url);
+    const QRegularExpressionMatch match = re.match(url);
     return match.hasMatch() ? match.captured(1) : QString();
 }
 
@@ -577,7 +635,7 @@ void JellyfinManager::PostSessionEvent(const QString &endpoint, QJsonObject body
     body["VolumeLevel"] = nounours->mpv->getVolume();
     body["PositionTicks"] = qint64(nounours->mpv->getTime()) * 10000000LL;
     body["CanSeek"] = true;
-    body["PlayMethod"] = "DirectStream";
+    body["PlayMethod"] = transcodeMode ? "Transcode" : "DirectStream";
 
     QNetworkReply *reply = manager->post(request, QJsonDocument(body).toJson());
     connect(reply, &QNetworkReply::finished, reply, &QNetworkReply::deleteLater);
@@ -605,6 +663,13 @@ void JellyfinManager::UpdatePlaybackState(const QString &url, int playState)
 {
     QString itemId = ItemIdFromUrl(url);
 
+    // In transcode mode mpv reports .m3u8 / HLS segment URLs that don't match the
+    // /stream pattern, so itemId is empty even though we have an active session.
+    // Ignore these non-Jellyfin URLs to avoid tearing down the keepalive we set up
+    // in PlayMovie/PlayEpisodes before the HLS URL was loaded.
+    if(itemId.isEmpty() && !url.isEmpty() && transcodeMode && !activePlaybackItemId.isEmpty())
+        return;
+
     if(itemId != activePlaybackItemId)
     {
         if(!activePlaybackItemId.isEmpty())
@@ -616,7 +681,11 @@ void JellyfinManager::UpdatePlaybackState(const QString &url, int playState)
         if(activePlaybackItemId.isEmpty())
             return;
 
-        playSessionId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        // For transcode sessions the PlaySessionId must match the one in the HLS URL;
+        // otherwise Jellyfin discards progress reports and kills the transcoder.
+        playSessionId = (transcodeMode && !transcodeSessionId.isEmpty())
+                        ? transcodeSessionId
+                        : QUuid::createUuid().toString(QUuid::WithoutBraces);
         activePlaybackPaused = (playState == Mpv::Paused);
         ReportPlaybackStart(activePlaybackItemId);
         playbackProgressTimer->start();
@@ -743,6 +812,106 @@ void JellyfinManager::HandlePlaystateCommand(const QJsonObject &data)
         nounours->mpv->Stop();
     else if(command == "Seek")
         nounours->mpv->Seek(int(data["SeekPositionTicks"].toDouble() / 10000000.0), false, true);
+}
+
+void JellyfinManager::GetFavorites()
+{
+    if(accessToken.isEmpty())
+        return;
+
+    QString url = serverUrl;
+    if(url.endsWith('/'))
+        url.chop(1);
+
+    QUrlQuery query;
+    query.addQueryItem("Filters", "IsFavorite");
+    query.addQueryItem("IncludeItemTypes", "Movie,Series,Video");
+    query.addQueryItem("Recursive", "true");
+    query.addQueryItem("Fields", "Overview,ProductionYear");
+    query.addQueryItem("SortBy", "SortName");
+
+    QUrl requestUrl(url + "/Users/" + userId + "/Items");
+    requestUrl.setQuery(query);
+
+    QNetworkRequest request = BuildRequest(requestUrl);
+    request.setRawHeader("X-Emby-Token", accessToken.toUtf8());
+
+    QNetworkReply *reply = manager->get(request);
+    connect(reply, &QNetworkReply::finished, this, [=]
+    {
+        if(reply->error() != QNetworkReply::NoError)
+        {
+            emit connectionFailedSignal(reply->errorString());
+            reply->deleteLater();
+            return;
+        }
+
+        QJsonObject response = QJsonDocument::fromJson(reply->readAll()).object();
+        QList<JellyfinItem> items;
+        for(auto entry : response["Items"].toArray())
+        {
+            QJsonObject obj = entry.toObject();
+            JellyfinItem item;
+            item.id = obj["Id"].toString();
+            item.name = obj["Name"].toString();
+            item.type = obj["Type"].toString();
+            item.overview = obj["Overview"].toString();
+            item.year = obj["ProductionYear"].toInt();
+            item.isFavorite = true;
+            items.append(item);
+        }
+
+        emit favoritesResultsSignal(items);
+        reply->deleteLater();
+    });
+}
+
+void JellyfinManager::ToggleFavorite(const QString &itemId, bool setFavorite)
+{
+    if(accessToken.isEmpty() || itemId.isEmpty())
+        return;
+
+    QString url = serverUrl;
+    if(url.endsWith('/'))
+        url.chop(1);
+
+    QNetworkRequest request = BuildRequest(QUrl(url + "/Users/" + userId + "/FavoriteItems/" + itemId));
+    request.setRawHeader("X-Emby-Token", accessToken.toUtf8());
+    request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+
+    QNetworkReply *reply = setFavorite
+        ? manager->post(request, QByteArray())
+        : manager->deleteResource(request);
+
+    connect(reply, &QNetworkReply::finished, this, [=]
+    {
+        if(reply->error() == QNetworkReply::NoError)
+            emit favoriteToggledSignal(itemId, setFavorite);
+        reply->deleteLater();
+    });
+}
+
+void JellyfinManager::FetchImage(const QString &itemId, int maxHeight)
+{
+    if(accessToken.isEmpty() || itemId.isEmpty())
+        return;
+
+    QString url = serverUrl;
+    if(url.endsWith('/'))
+        url.chop(1);
+
+    QUrl imgUrl(QString("%0/Items/%1/Images/Primary?fillHeight=%2&quality=90&api_key=%3")
+                .arg(url, itemId, QString::number(maxHeight), accessToken));
+
+    QNetworkReply *reply = manager->get(BuildRequest(imgUrl));
+    connect(reply, &QNetworkReply::finished, this, [=]
+    {
+        QPixmap pixmap;
+        if(reply->error() == QNetworkReply::NoError)
+            pixmap.loadFromData(reply->readAll());
+        emit imageReadySignal(itemId, pixmap);
+        reply->deleteLater();
+    });
 }
 
 void JellyfinManager::HandlePlayCommand(const QJsonObject &data)

@@ -8,6 +8,7 @@
 #include <QDateTime>
 #include <QTextStream>
 #include <QUrl>
+#include <vector>
 #include "mediainfohelper.h"
 
 #include "nounoursengine.h"
@@ -328,15 +329,17 @@ void MpvHandler::RemoveOverlay(int id)
 
 void MpvHandler::LoadFile(QString f)
 {
+    ResumeHwdec(); // restore from any previous Jellyfin transcode session
     PlayFile(LoadPlaylist(f));
 }
 
-void MpvHandler::LoadUrlPlaylist(const QStringList &urls, const QStringList &labels, int startIndex)
+void MpvHandler::LoadUrlPlaylist(const QStringList &urls, const QStringList &labels, int startIndex,
+                                  const QString &perFileOptions)
 {
     setPath("");
     setPlaylist(urls, labels);
     if(startIndex >= 0 && startIndex < urls.size())
-        PlayFile(urls[startIndex]);
+        PlayFile(urls[startIndex], perFileOptions);
 }
 
 QString MpvHandler::LoadPlaylist(QString f)
@@ -405,14 +408,14 @@ QString MpvHandler::LoadPlaylist(QString f)
     return f;
 }
 
-bool MpvHandler::PlayFile(QString f)
+bool MpvHandler::PlayFile(QString f, const QString &perFileOptions)
 {
     if(f == QString()) // ignore if file doesn't exist
         return false;
 
     if(path == QString()) // web url
     {
-        OpenFile(f);
+        OpenFile(f, perFileOptions);
         setFile(f);
     }
     else
@@ -420,7 +423,7 @@ bool MpvHandler::PlayFile(QString f)
         QFile qf(path+f);
         if(qf.exists())
         {
-            OpenFile(path+f);
+            OpenFile(path+f, perFileOptions);
             setFile(f);
             Play();
         }
@@ -718,6 +721,19 @@ void MpvHandler::Hwdec(QString h)
     SetOption("hwdec", hwdec == "auto" ? "vulkan,no" : hwdec);
 }
 
+void MpvHandler::SuppressHwdec()
+{
+    // HLS transcode segments are pre-encoded TS files, not live fragmented MP4,
+    // so no DRI3 buffer sharing occurs and the Vulkan VO can stay.
+    // Disable hwdec only: the server already decoded+re-encoded; CPU H.264 is trivial.
+    SetOption("hwdec", "no");
+}
+
+void MpvHandler::ResumeHwdec()
+{
+    SetOption("hwdec", hwdec == "auto" ? "vulkan,no" : hwdec);
+}
+
 void MpvHandler::Framedrop(QString f)
 {
     setFramedrop(f);
@@ -962,13 +978,67 @@ void MpvHandler::SetOption(QString key, QString val)
     HandleErrorCode(mpv_set_option_string(mpv, tmp1.constData(), tmp2.constData()));
 }
 
-void MpvHandler::OpenFile(QString f)
+void MpvHandler::OpenFile(QString f, const QString &perFileOptions)
 {
     emit fileChanging(time, fileInfo.length);
 
-    const QByteArray tmp = f.toUtf8();
-    const char *args[] = {"loadfile", tmp.constData(), NULL};
-    Command(args);
+    QByteArray urlBytes = f.toUtf8();
+
+    if(perFileOptions.isEmpty())
+    {
+        const char *args[] = {"loadfile", urlBytes.constData(), NULL};
+        Command(args);
+        return;
+    }
+
+    // loadfile's 4th argument (options) is a node-map, not a plain string.
+    // The C-string-array Command() can't encode a node-map, so use mpv_command_node_async.
+    const QStringList pairs = perFileOptions.split(QLatin1Char(','));
+    const int n = pairs.size();
+
+    // QByteArrays must stay alive until mpv copies the node (which it does before returning)
+    QList<QByteArray>     kBufs(n), vBufs(n);
+    std::vector<mpv_node> optVals(static_cast<size_t>(n));
+    std::vector<char *>   optKeys(static_cast<size_t>(n));
+
+    for(int i = 0; i < n; ++i)
+    {
+        const int eq          = pairs[i].indexOf(QLatin1Char('='));
+        kBufs[i]              = (eq < 0 ? pairs[i]           : pairs[i].left(eq)).toUtf8();
+        vBufs[i]              = (eq < 0 ? QString{}           : pairs[i].mid(eq + 1)).toUtf8();
+        optKeys[i]            = kBufs[i].data();
+        optVals[i].format     = MPV_FORMAT_STRING;
+        optVals[i].u.string   = vBufs[i].data();
+    }
+
+    mpv_node_list optMap;
+    optMap.num    = n;
+    optMap.values = optVals.data();
+    optMap.keys   = optKeys.data();
+
+    mpv_node optsNode;
+    optsNode.format = MPV_FORMAT_NODE_MAP;
+    optsNode.u.list = &optMap;
+
+    // loadfile argv: command-name, url, flags, index(-1=unset), options-map
+    const char lf[] = "loadfile", rp[] = "replace";
+    mpv_node cmdArgs[5];
+    cmdArgs[0].format   = MPV_FORMAT_STRING; cmdArgs[0].u.string = const_cast<char *>(lf);
+    cmdArgs[1].format   = MPV_FORMAT_STRING; cmdArgs[1].u.string = urlBytes.data();
+    cmdArgs[2].format   = MPV_FORMAT_STRING; cmdArgs[2].u.string = const_cast<char *>(rp);
+    cmdArgs[3].format   = MPV_FORMAT_INT64;  cmdArgs[3].u.int64  = -1;
+    cmdArgs[4] = optsNode;
+
+    mpv_node_list cmdList;
+    cmdList.num    = 5;
+    cmdList.values = cmdArgs;
+    cmdList.keys   = nullptr;
+
+    mpv_node cmd;
+    cmd.format = MPV_FORMAT_NODE_ARRAY;
+    cmd.u.list = &cmdList;
+
+    mpv_command_node_async(mpv, MPV_REPLY_COMMAND, &cmd);
 }
 
 QString MpvHandler::PopulatePlaylist()

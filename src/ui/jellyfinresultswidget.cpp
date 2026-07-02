@@ -5,10 +5,13 @@
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
+#include <QMenu>
 #include <QTreeWidget>
+#include <QLabel>
 #include <QTextEdit>
-#include <QPushButton>
+#include <QToolButton>
 #include <QSplitter>
+#include <QResizeEvent>
 
 JellyfinResultsWidget::JellyfinResultsWidget(NounoursEngine *nounours, QWidget *parent)
     : QWidget(parent), nounours(nounours), jellyfin(nounours->jellyfin)
@@ -16,17 +19,57 @@ JellyfinResultsWidget::JellyfinResultsWidget(NounoursEngine *nounours, QWidget *
     resultsList = new QTreeWidget(this);
     resultsList->setHeaderHidden(true);
     resultsList->setColumnCount(1);
+
+    // Poster area: container with absolute-positioned label + heart overlay
+    posterContainer = new QWidget(this);
+    posterContainer->setMinimumHeight(80);
+    posterContainer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    posterContainer->setStyleSheet("background: #111;");
+    posterContainer->installEventFilter(this);
+
+    posterLabel = new QLabel(posterContainer);
+    posterLabel->setAlignment(Qt::AlignCenter);
+    posterLabel->setGeometry(posterContainer->rect());
+
+    heartButton = new QToolButton(posterContainer);
+    heartButton->setCheckable(true);
+    heartButton->setText(QStringLiteral("♥")); // ♥
+    heartButton->setFixedSize(30, 30);
+    heartButton->setVisible(false);
+    heartButton->setStyleSheet(
+        "QToolButton { color: rgba(210,210,210,170); background: rgba(0,0,0,120); "
+        "border: none; border-radius: 15px; font-size: 16px; }"
+        "QToolButton:hover { background: rgba(0,0,0,190); color: rgba(255,180,180,230); }"
+        "QToolButton:checked { color: #e53935; background: rgba(0,0,0,150); }"
+    );
+
     synopsisEdit = new QTextEdit(this);
     synopsisEdit->setReadOnly(true);
 
+    auto *rightPanel = new QWidget(this);
+    auto *rightLayout = new QVBoxLayout(rightPanel);
+    rightLayout->setContentsMargins(0, 0, 0, 0);
+    rightLayout->setSpacing(4);
+    rightLayout->addWidget(posterContainer, 2);
+    rightLayout->addWidget(synopsisEdit, 1);
+
     auto *splitter = new QSplitter(Qt::Horizontal, this);
     splitter->addWidget(resultsList);
-    splitter->addWidget(synopsisEdit);
-    splitter->setStretchFactor(0, 1);
-    splitter->setStretchFactor(1, 1);
+    splitter->addWidget(rightPanel);
+    splitter->setStretchFactor(0, 3);
+    splitter->setStretchFactor(1, 2);
 
-    playButton = new QPushButton(tr("Play"), this);
+    auto *playMenu        = new QMenu(this);
+    auto *actPlay         = playMenu->addAction(tr("Play"));
+    auto *actTranscode720  = playMenu->addAction(tr("Transcode to 720p (1280×720)"));
+    auto *actTranscode1080 = playMenu->addAction(tr("Transcode to 1080p (1920×1080)"));
+
+    playButton = new QToolButton(this);
+    playButton->setText(tr("Play"));
     playButton->setEnabled(false);
+    playButton->setPopupMode(QToolButton::MenuButtonPopup);
+    playButton->setMenu(playMenu);
+    playButton->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
 
     auto *buttonLayout = new QHBoxLayout;
     buttonLayout->addStretch();
@@ -82,21 +125,96 @@ JellyfinResultsWidget::JellyfinResultsWidget(NounoursEngine *nounours, QWidget *
         {
             playButton->setEnabled(false);
             synopsisEdit->clear();
+            currentImageId.clear();
+            currentPixmap = QPixmap();
+            posterLabel->clear();
+            heartButton->setVisible(false);
             return;
         }
+
         JellyfinItem item = data.value<JellyfinItem>();
         synopsisEdit->setPlainText(item.overview.isEmpty() ? tr("No synopsis available.") : item.overview);
         playButton->setEnabled(item.type == "Movie" || item.type == "Video" || item.type == "Episode");
+
+        currentImageId = item.id;
+        currentPixmap = QPixmap();
+        posterLabel->clear();
+        jellyfin->FetchImage(item.id);
+
+        heartButton->blockSignals(true);
+        heartButton->setChecked(item.isFavorite);
+        heartButton->blockSignals(false);
+        heartButton->setVisible(true);
+        PositionHeart();
     });
 
-    connect(playButton, &QPushButton::clicked, this, &JellyfinResultsWidget::DoPlay);
-    connect(resultsList, &QTreeWidget::itemDoubleClicked, this, &JellyfinResultsWidget::DoPlay);
+    connect(jellyfin, &JellyfinManager::imageReadySignal, this, [=](QString itemId, QPixmap pixmap)
+    {
+        if(itemId != currentImageId)
+            return;
+        currentPixmap = pixmap;
+        if(pixmap.isNull())
+        {
+            posterLabel->clear();
+            return;
+        }
+        QSize sz = posterContainer->size();
+        posterLabel->setPixmap(pixmap.scaled(sz, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+    });
+
+    connect(heartButton, &QToolButton::toggled, this, [=](bool checked)
+    {
+        if(currentImageId.isEmpty())
+            return;
+        // optimistic update: persist new state in the tree item data
+        QTreeWidgetItem *current = resultsList->currentItem();
+        if(current)
+        {
+            JellyfinItem item = current->data(0, Qt::UserRole).value<JellyfinItem>();
+            item.isFavorite = checked;
+            current->setData(0, Qt::UserRole, QVariant::fromValue(item));
+        }
+        jellyfin->ToggleFavorite(currentImageId, checked);
+    });
+
+    connect(playButton,     &QToolButton::clicked, this, [=]{ DoPlay(0);    });
+    connect(actPlay,        &QAction::triggered,   this, [=]{ DoPlay(0);    });
+    connect(actTranscode720, &QAction::triggered,  this, [=]{ DoPlay(720);  });
+    connect(actTranscode1080,&QAction::triggered,  this, [=]{ DoPlay(1080); });
+    connect(resultsList, &QTreeWidget::itemDoubleClicked, this, [=]{ DoPlay(0); });
+}
+
+bool JellyfinResultsWidget::eventFilter(QObject *obj, QEvent *event)
+{
+    if(obj == posterContainer && event->type() == QEvent::Resize)
+    {
+        QSize sz = static_cast<QResizeEvent*>(event)->size();
+        posterLabel->setGeometry(0, 0, sz.width(), sz.height());
+        if(!currentPixmap.isNull())
+            posterLabel->setPixmap(currentPixmap.scaled(sz, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+        if(heartButton->isVisible())
+            heartButton->move(sz.width() - heartButton->width() - 6,
+                              sz.height() - heartButton->height() - 6);
+    }
+    return QWidget::eventFilter(obj, event);
+}
+
+void JellyfinResultsWidget::PositionHeart()
+{
+    QSize sz = posterContainer->size();
+    heartButton->move(sz.width() - heartButton->width() - 6,
+                      sz.height() - heartButton->height() - 6);
+    heartButton->raise();
 }
 
 void JellyfinResultsWidget::SetResults(const QList<JellyfinItem> &items)
 {
     resultsList->clear();
     synopsisEdit->clear();
+    currentImageId.clear();
+    currentPixmap = QPixmap();
+    posterLabel->clear();
+    heartButton->setVisible(false);
     seriesNodes.clear();
     seasonNodes.clear();
 
@@ -138,7 +256,7 @@ void JellyfinResultsWidget::OnItemExpanded(QTreeWidgetItem *item)
     }
 }
 
-void JellyfinResultsWidget::DoPlay()
+void JellyfinResultsWidget::DoPlay(int transcodeHeight)
 {
     QTreeWidgetItem *current = resultsList->currentItem();
     if(!current)
@@ -187,10 +305,10 @@ void JellyfinResultsWidget::DoPlay()
         }
 
         JellyfinItem seriesData = seriesItem->data(0, Qt::UserRole).value<JellyfinItem>();
-        jellyfin->PlayEpisodes(seriesData.id, seasons, seasonIndex, episodes, episodeIndex);
+        jellyfin->PlayEpisodes(seriesData.id, seasons, seasonIndex, episodes, episodeIndex, transcodeHeight);
     }
     else
-        jellyfin->PlayMovie(item);
+        jellyfin->PlayMovie(item, transcodeHeight);
 
     window()->close();
 }
