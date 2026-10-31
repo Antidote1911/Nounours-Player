@@ -1039,6 +1039,17 @@ void MainWindow::MapShortcuts()
         (*iter)->setShortcut(QKeySequence());
 }
 
+void MainWindow::closeEvent(QCloseEvent *event)
+{
+    // Don't let Qt hide the window before mpv is destroyed: with the Vulkan VO
+    // on NVIDIA, the VO thread blocks forever presenting to an unmapped window,
+    // so mpv_terminate_destroy() (in ~MainWindow) never returns and the process
+    // stays alive. Quit the event loop instead; the window is torn down
+    // together with mpv in ~MainWindow, as with the "Exit" menu action.
+    event->ignore();
+    qApp->quit();
+}
+
 void MainWindow::dragEnterEvent(QDragEnterEvent *event)
 {
     if(event->mimeData()->hasUrls() || event->mimeData()->hasText()) // url / text

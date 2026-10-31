@@ -7,6 +7,7 @@
 #include <QMouseEvent>
 #include <QWheelEvent>
 #include <QKeyEvent>
+#include <QCloseEvent>
 #include <QEvent>
 #include <QTimer>
 #include <QTranslator>
@@ -54,6 +55,7 @@ public slots:
     void MapShortcuts();
 
 protected:
+    void closeEvent(QCloseEvent *event);            // window closed (WM close button, Alt+F4)
     void dragEnterEvent(QDragEnterEvent *event);    // drag file into
     void dropEvent(QDropEvent *event);              // drop file into
     void mousePressEvent(QMouseEvent *event);       // pressed mouse down
