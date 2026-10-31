@@ -15,6 +15,20 @@ int main(int argc, char *argv[])
 #if defined(Q_OS_WIN)
     FreeConsole();
 #endif
+#if defined(Q_OS_LINUX)
+    // mpv is embedded through its "wid" option, which only works on X11: on a
+    // native Wayland session mpv ignores it and opens its own detached window
+    // (typical in VMs, where the default session is Wayland). Run through
+    // XWayland instead, and hide WAYLAND_DISPLAY so mpv doesn't pick its
+    // Wayland backend either. An explicit QT_QPA_PLATFORM is respected.
+    if(qEnvironmentVariableIsEmpty("QT_QPA_PLATFORM") &&
+       !qEnvironmentVariableIsEmpty("WAYLAND_DISPLAY") &&
+       !qEnvironmentVariableIsEmpty("DISPLAY"))
+    {
+        qputenv("QT_QPA_PLATFORM", "xcb");
+        qunsetenv("WAYLAND_DISPLAY");
+    }
+#endif
     QApplication a(argc, argv);
     setlocale(LC_NUMERIC, "C"); // for mpv
 
