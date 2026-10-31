@@ -699,6 +699,18 @@ void MpvHandler::Interpolate(bool interpolate)
 void MpvHandler::Vo(QString o)
 {
     setVo(o);
+#if defined(Q_OS_LINUX)
+    // With "auto", mpv probes gpu, gpu-next, vdpau, xv, then sdl. Where none of
+    // the first ones work (VMs without 3D acceleration or Xv, ...) it picks
+    // sdl, which ignores "wid" and opens its own detached window. Restrict
+    // auto to outputs that can be embedded, ending with the plain x11 output
+    // (software, but always available on X11).
+    if(vo.isEmpty())
+    {
+        SetOption("vo", "gpu,gpu-next,vdpau,xv,vaapi,x11");
+        return;
+    }
+#endif
     SetOption("vo", vo);
 }
 
