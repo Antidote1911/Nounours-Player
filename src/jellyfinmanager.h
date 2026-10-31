@@ -43,7 +43,7 @@ public:
 
     QString GetStreamUrl(const QString &itemId) const
     {
-        return QString("%0/Videos/%1/stream?static=true&api_key=%2").arg(serverUrl, itemId, accessToken);
+        return QString("%0/Videos/%1/stream?static=true&ApiKey=%2").arg(serverUrl, itemId, accessToken);
     }
 
     QString GetTranscodeUrl(const QString &itemId) const
@@ -64,7 +64,7 @@ public:
                        "&VideoCodec=h264&AudioCodec=aac"
                        "&AudioBitrate=320000&MaxAudioChannels=6"
                        "&AllowVideoStreamCopy=false&AllowAudioStreamCopy=false"
-                       "&api_key=%4")
+                       "&ApiKey=%4")
                .arg(serverUrl, itemId, deviceId, transcodeSessionId, accessToken)
                + QString("&VideoBitrate=%1&MaxWidth=%2&MaxHeight=%3")
                  .arg(videoBitrate).arg(maxW).arg(transcodeHeight);
@@ -152,7 +152,7 @@ private:
     QWebSocket *socket;
 
     QString AuthHeader() const;
-    static QNetworkRequest BuildRequest(const QUrl &url);
+    QNetworkRequest BuildRequest(const QUrl &url) const;
     void FetchServerName();
     void SearchAllLibraries(const QString &term, const QHash<QString, QString> &libraries);
     static QString ItemIdFromUrl(const QString &url);

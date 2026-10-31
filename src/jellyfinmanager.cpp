@@ -77,12 +77,18 @@ QString JellyfinManager::AuthHeader() const
             .arg(deviceId, NOUNOURS_PLAYER_VERSION, QHostInfo::localHostName(), QSysInfo::prettyProductName());
 }
 
-QNetworkRequest JellyfinManager::BuildRequest(const QUrl &url)
+QNetworkRequest JellyfinManager::BuildRequest(const QUrl &url) const
 {
     QNetworkRequest request(url);
     // identify as the official-ish Nounours Player to reverse proxies that
     // block requests with a generic/script User-Agent (e.g. Qt's default)
     request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("NounoursPlayer/" NOUNOURS_PLAYER_VERSION));
+    // Jellyfin 12 dropped the legacy X-Emby-Authorization / X-Emby-Token headers:
+    // client info and access token now both go in the standard Authorization header.
+    QString auth = AuthHeader();
+    if(!accessToken.isEmpty())
+        auth += QString(", Token=\"%0\"").arg(accessToken);
+    request.setRawHeader("Authorization", auth.toUtf8());
     return request;
 }
 
@@ -102,16 +108,16 @@ void JellyfinManager::Connect()
     if(url.endsWith('/'))
         url.chop(1);
 
+    // clear first so BuildRequest doesn't send a stale token with the login
+    accessToken.clear();
+    userId.clear();
+
     QNetworkRequest request = BuildRequest(QUrl(url + "/Users/AuthenticateByName"));
     request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
-    request.setRawHeader("X-Emby-Authorization", AuthHeader().toUtf8());
 
     QJsonObject body;
     body["Username"] = username;
     body["Pw"] = password;
-
-    accessToken.clear();
-    userId.clear();
 
     QNetworkReply *reply = manager->post(request, QJsonDocument(body).toJson());
     connect(reply, &QNetworkReply::finished, this, [=]
@@ -172,7 +178,6 @@ void JellyfinManager::Search(const QString &term)
     // tagged with the library it belongs to (Movies, Series, Animes, ...)
     QUrl viewsUrl(url + "/Users/" + userId + "/Views");
     QNetworkRequest viewsRequest = BuildRequest(viewsUrl);
-    viewsRequest.setRawHeader("X-Emby-Token", accessToken.toUtf8());
 
     QNetworkReply *viewsReply = manager->get(viewsRequest);
     connect(viewsReply, &QNetworkReply::finished, this, [=]
@@ -222,7 +227,6 @@ void JellyfinManager::SearchAllLibraries(const QString &term, const QHash<QStrin
         requestUrl.setQuery(query);
 
         QNetworkRequest request = BuildRequest(requestUrl);
-        request.setRawHeader("X-Emby-Token", accessToken.toUtf8());
         return request;
     };
 
@@ -310,7 +314,6 @@ void JellyfinManager::GetSeasons(const QString &seriesId)
     requestUrl.setQuery(query);
 
     QNetworkRequest request = BuildRequest(requestUrl);
-    request.setRawHeader("X-Emby-Token", accessToken.toUtf8());
 
     QNetworkReply *reply = manager->get(request);
     connect(reply, &QNetworkReply::finished, this, [=]
@@ -362,7 +365,6 @@ void JellyfinManager::GetEpisodes(const QString &seriesId, const QString &season
     requestUrl.setQuery(query);
 
     QNetworkRequest request = BuildRequest(requestUrl);
-    request.setRawHeader("X-Emby-Token", accessToken.toUtf8());
 
     QNetworkReply *reply = manager->get(request);
     connect(reply, &QNetworkReply::finished, this, [=]
@@ -417,7 +419,6 @@ void JellyfinManager::GetGenres()
     requestUrl.setQuery(query);
 
     QNetworkRequest request = BuildRequest(requestUrl);
-    request.setRawHeader("X-Emby-Token", accessToken.toUtf8());
 
     QNetworkReply *reply = manager->get(request);
     connect(reply, &QNetworkReply::finished, this, [=]
@@ -469,7 +470,6 @@ void JellyfinManager::GetItemsByGenre(const QString &genreId)
     requestUrl.setQuery(query);
 
     QNetworkRequest request = BuildRequest(requestUrl);
-    request.setRawHeader("X-Emby-Token", accessToken.toUtf8());
 
     QNetworkReply *reply = manager->get(request);
     connect(reply, &QNetworkReply::finished, this, [=]
@@ -627,7 +627,6 @@ void JellyfinManager::PostSessionEvent(const QString &endpoint, QJsonObject body
 
     QNetworkRequest request = BuildRequest(QUrl(url + endpoint));
     request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
-    request.setRawHeader("X-Emby-Token", accessToken.toUtf8());
 
     body["PlaySessionId"] = playSessionId;
     body["IsPaused"] = activePlaybackPaused;
@@ -719,7 +718,6 @@ void JellyfinManager::ReportCapabilities()
 
     QNetworkRequest request = BuildRequest(QUrl(url + "/Sessions/Capabilities/Full"));
     request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
-    request.setRawHeader("X-Emby-Token", accessToken.toUtf8());
 
     QJsonObject body;
     body["PlayableMediaTypes"] = QJsonArray{"Video", "Audio"};
@@ -746,7 +744,7 @@ void JellyfinManager::ConnectWebSocket()
     url.setPath(path + "/socket");
 
     QUrlQuery query;
-    query.addQueryItem("api_key", accessToken);
+    query.addQueryItem("ApiKey", accessToken);
     query.addQueryItem("deviceId", deviceId);
     url.setQuery(query);
 
@@ -834,7 +832,6 @@ void JellyfinManager::GetFavorites()
     requestUrl.setQuery(query);
 
     QNetworkRequest request = BuildRequest(requestUrl);
-    request.setRawHeader("X-Emby-Token", accessToken.toUtf8());
 
     QNetworkReply *reply = manager->get(request);
     connect(reply, &QNetworkReply::finished, this, [=]
@@ -876,7 +873,6 @@ void JellyfinManager::ToggleFavorite(const QString &itemId, bool setFavorite)
         url.chop(1);
 
     QNetworkRequest request = BuildRequest(QUrl(url + "/Users/" + userId + "/FavoriteItems/" + itemId));
-    request.setRawHeader("X-Emby-Token", accessToken.toUtf8());
     request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
 
     QNetworkReply *reply = setFavorite
@@ -900,7 +896,7 @@ void JellyfinManager::FetchImage(const QString &itemId, int maxHeight)
     if(url.endsWith('/'))
         url.chop(1);
 
-    QUrl imgUrl(QString("%0/Items/%1/Images/Primary?fillHeight=%2&quality=90&api_key=%3")
+    QUrl imgUrl(QString("%0/Items/%1/Images/Primary?fillHeight=%2&quality=90&ApiKey=%3")
                 .arg(url, itemId, QString::number(maxHeight), accessToken));
 
     QNetworkReply *reply = manager->get(BuildRequest(imgUrl));
@@ -935,7 +931,6 @@ void JellyfinManager::HandlePlayCommand(const QJsonObject &data)
     requestUrl.setQuery(query);
 
     QNetworkRequest request = BuildRequest(requestUrl);
-    request.setRawHeader("X-Emby-Token", accessToken.toUtf8());
 
     QNetworkReply *reply = manager->get(request);
     connect(reply, &QNetworkReply::finished, this, [=]
