@@ -87,7 +87,7 @@ jobs:
           if-no-files-found: error
 
   # ─────────────────────────────────────────────
-  # Windows x64  (MSYS2 / MinGW-w64)
+  # Windows x64  (MSYS2 / UCRT64)
   # ─────────────────────────────────────────────
   windows:
     name: Windows x64
@@ -101,7 +101,7 @@ jobs:
 
       - uses: msys2/setup-msys2@v2
         with:
-          msystem: MINGW64
+          msystem: UCRT64
           update: true
 
       - name: Get version
@@ -111,18 +111,18 @@ jobs:
       - name: Install dependencies
         run: |
           pacman -S --noconfirm --needed \
-            mingw-w64-x86_64-toolchain \
-            mingw-w64-x86_64-cmake \
-            mingw-w64-x86_64-ninja \
-            mingw-w64-x86_64-pkg-config \
-            mingw-w64-x86_64-angleproject \
-            mingw-w64-x86_64-qt6-base \
-            mingw-w64-x86_64-qt6-svg \
-            mingw-w64-x86_64-qt6-websockets \
-            mingw-w64-x86_64-qt6-tools \
-            mingw-w64-x86_64-mpv \
-            mingw-w64-x86_64-libmediainfo \
-            mingw-w64-x86_64-libzip
+            mingw-w64-ucrt-x86_64-toolchain \
+            mingw-w64-ucrt-x86_64-cmake \
+            mingw-w64-ucrt-x86_64-ninja \
+            mingw-w64-ucrt-x86_64-pkg-config \
+            mingw-w64-ucrt-x86_64-angleproject \
+            mingw-w64-ucrt-x86_64-qt6-base \
+            mingw-w64-ucrt-x86_64-qt6-svg \
+            mingw-w64-ucrt-x86_64-qt6-websockets \
+            mingw-w64-ucrt-x86_64-qt6-tools \
+            mingw-w64-ucrt-x86_64-mpv \
+            mingw-w64-ucrt-x86_64-libmediainfo \
+            mingw-w64-ucrt-x86_64-libzip
 
       - name: Build
         run: |
@@ -136,7 +136,7 @@ jobs:
           cp build/nounours-player.exe deploy/
           windeployqt6 --release --no-translations --no-opengl-sw deploy/nounours-player.exe
           ldd build/nounours-player.exe \
-            | grep '/mingw64/bin' \
+            | grep '/ucrt64/bin' \
             | awk '{ print $3 }' \
             | xargs -I{} cp -n {} deploy/
 
