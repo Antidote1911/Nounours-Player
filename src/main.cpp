@@ -20,8 +20,11 @@ int main(int argc, char *argv[])
     // native Wayland session mpv ignores it and opens its own detached window
     // (typical in VMs, where the default session is Wayland). Run through
     // XWayland instead, and hide WAYLAND_DISPLAY so mpv doesn't pick its
-    // Wayland backend either. An explicit QT_QPA_PLATFORM is respected.
-    if(qEnvironmentVariableIsEmpty("QT_QPA_PLATFORM") &&
+    // Wayland backend either. QT_QPA_PLATFORM is overridden when it asks for
+    // Wayland (many Sway/Hyprland setups export "wayland;xcb" globally), since
+    // embedding can't work there; any other explicit platform is respected.
+    const QString qpa = qEnvironmentVariable("QT_QPA_PLATFORM");
+    if((qpa.isEmpty() || qpa.contains("wayland", Qt::CaseInsensitive)) &&
        !qEnvironmentVariableIsEmpty("WAYLAND_DISPLAY") &&
        !qEnvironmentVariableIsEmpty("DISPLAY"))
     {
