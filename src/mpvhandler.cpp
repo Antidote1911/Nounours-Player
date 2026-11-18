@@ -729,8 +729,11 @@ void MpvHandler::Hwdec(QString h)
     // fails to interop with the embedded Vulkan video output for some codecs
     // (e.g. VP8 on AMD/RADV): the failed hwaccel probe leaves the swapchain
     // broken, producing audio with no video at all. Restrict "auto" to
-    // Vulkan, which cleanly falls back to software decoding per-file instead.
-    SetOption("hwdec", hwdec == "auto" ? "vulkan,no" : hwdec);
+    // NVDEC and Vulkan, which cleanly fall back to software decoding per-file
+    // instead. NVDEC comes first: on NVIDIA, Vulkan decoding of HEVC deadlocks
+    // on seeks (mpv stops answering) and drops frames during playback, while
+    // NVDEC doesn't; elsewhere NVDEC is unavailable and Vulkan is used.
+    SetOption("hwdec", hwdecOption());
 }
 
 void MpvHandler::SuppressHwdec()
@@ -743,7 +746,12 @@ void MpvHandler::SuppressHwdec()
 
 void MpvHandler::ResumeHwdec()
 {
-    SetOption("hwdec", hwdec == "auto" ? "vulkan,no" : hwdec);
+    SetOption("hwdec", hwdecOption());
+}
+
+QString MpvHandler::hwdecOption() const
+{
+    return hwdec == "auto" ? "nvdec,vulkan,no" : hwdec;
 }
 
 void MpvHandler::Framedrop(QString f)

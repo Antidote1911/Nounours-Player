@@ -199,6 +199,8 @@ signals:
     void messageSignal(QString m);
 
 private:
+    QString hwdecOption() const; // mpv "hwdec" value for the user's setting
+
     NounoursEngine *nounours;
     mpv_handle *mpv = nullptr;
 
